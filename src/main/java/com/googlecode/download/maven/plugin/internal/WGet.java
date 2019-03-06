@@ -14,13 +14,7 @@
  */
 package com.googlecode.download.maven.plugin.internal;
 
-import java.io.File;
-import java.net.ProxySelector;
-import java.net.URI;
-import java.nio.file.Files;
-import java.security.MessageDigest;
-import java.util.concurrent.TimeUnit;
-
+import com.googlecode.download.maven.plugin.internal.cache.DownloadCache;
 import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.Credentials;
@@ -61,7 +55,12 @@ import org.sonatype.plexus.build.incremental.BuildContext;
 import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
 import org.sonatype.plexus.components.sec.dispatcher.SecDispatcherException;
 
-import com.googlecode.download.maven.plugin.internal.cache.DownloadCache;
+import java.io.File;
+import java.net.ProxySelector;
+import java.net.URI;
+import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Will download a file from a web site using the standard HTTP protocol.
@@ -129,6 +128,13 @@ public class WGet extends AbstractMojo {
      */
     @Parameter
     private String sha1;
+
+    /**
+     * The sha256 of the file. If set, file signature will be compared to this
+     * signature and plugin will fail.
+     */
+    @Parameter
+    private String sha256;
 
     /**
      * The sha512 of the file. If set, file signature will be compared to this
@@ -287,6 +293,11 @@ public class WGet extends AbstractMojo {
                         algorithm = "SHA1";
                     }
 
+                    if (this.sha256 != null) {
+                        expectedDigest = this.sha256;
+                        algorithm = "SHA-256";
+                    }
+
                     if (this.sha512 != null) {
                         expectedDigest = this.sha512;
                         algorithm = "SHA-512";
@@ -318,7 +329,7 @@ public class WGet extends AbstractMojo {
             }
 
             if (!haveFile) {
-                File cached = cache.getArtifact(this.uri, this.md5, this.sha1, this.sha512);
+                File cached = cache.getArtifact(this.uri, this.md5, this.sha1, this.sha256, this.sha512);
                 if (!this.skipCache && cached != null && cached.exists()) {
                     getLog().info("Got from cache: " + cached.getAbsolutePath());
                     Files.copy(cached.toPath(), outputFile.toPath());
@@ -334,6 +345,10 @@ public class WGet extends AbstractMojo {
                             if (this.sha1 != null) {
                                 SignatureUtils.verifySignature(outputFile, this.sha1,
                                     MessageDigest.getInstance("SHA1"));
+                            }
+                            if (this.sha256 != null) {
+                                SignatureUtils.verifySignature(outputFile, this.sha256,
+                                        MessageDigest.getInstance("SHA-256"));
                             }
                             if (this.sha512 != null) {
                                 SignatureUtils.verifySignature(outputFile, this.sha512,
@@ -358,7 +373,7 @@ public class WGet extends AbstractMojo {
                     }
                 }
             }
-            cache.install(this.uri, outputFile, this.md5, this.sha1, this.sha512);
+            cache.install(this.uri, outputFile, this.md5, this.sha1, this.sha256, this.sha512);
             if (this.unpack) {
                 unpack(outputFile);
                 buildContext.refresh(outputDirectory);
@@ -444,10 +459,15 @@ public class WGet extends AbstractMojo {
             routePlanner = new SystemDefaultRoutePlanner(ProxySelector.getDefault());
         }
 
+        RequestConfig.Builder requestBuilder = RequestConfig.custom();
+        requestBuilder.setConnectTimeout(30 * 1000);
+        requestBuilder.setConnectionRequestTimeout(30 * 1000);
+
         final CloseableHttpClient httpClient = HttpClientBuilder.create()
                 .setConnectionManager(CONN_POOL)
                 .setConnectionManagerShared(true)
                 .setRoutePlanner(routePlanner)
+                .setDefaultRequestConfig(requestBuilder.build())
                 .build();
 
         final HttpFileRequester fileRequester = new HttpFileRequester(
